@@ -1,22 +1,6 @@
 # SDE Intern Assignment: Shared Bill Splitter
 
-Welcome. In this assignment you build a small bill splitter for a shared home. It has two parts:
-
-1. **Homes and members:** create a home and add members to it.
-2. **Bill splitting:** split a bill between the members. Each member pays their own share.
-
-The assignment is small on purpose. We want correct, safe, and clear code. We do not want many features.
-
-## What we look at
-
-- **Your code passes the tests.** The tests decide, not opinion. You get the visible tests. We also run extra tests that you do not see.
-- **Your code is safe when things go wrong.** Wrong input, repeated requests, and two requests at the same time must not break your data.
-- **Your code is typed.** Use TypeScript. Do not use `any`.
-- **You understand your code.** You record a short video and explain it.
-
-Take your time. A careful, correct solution is better than a fast one. We expect 2 to 3 days of real work.
-
-## Stack (required)
+## Stack 
 
 - **API:** Hono on Cloudflare Workers
 - **Database:** Cloudflare D1 (SQLite). The binding is `DB` in `api/wrangler.jsonc`.
@@ -24,6 +8,7 @@ Take your time. A careful, correct solution is better than a fast one. We expect
 - **Language:** TypeScript on both sides
 - **Tests:** Vitest, running inside the Workers runtime
 - **Quality:** Biome. `pnpm check` and `pnpm typecheck` must pass.
+- no additional form or validation library is used, native is used.
 
 You choose the rest (styling, form library, validation library). Pick tools you can explain.
 
@@ -141,11 +126,6 @@ pnpm --filter bill-splitter-api cf-typegen
 - Do **not** change the visible tests or `api/test/helpers.ts`. We compare them with the original.
 - We run extra tests after you submit. They test the cases in "Cases you must handle" more closely.
 
-## AI policy
-
-You can use AI tools. Tell us which ones and where in your answers on the form.
-You must understand every line you submit. We check this with your video and in a live call. "The AI wrote it" is not an answer.
-
 ## How to submit
 
 1. Click **Use this template**, then **Create a new repository**. Make the repository **public**.
@@ -155,3 +135,56 @@ You must understand every line you submit. We check this with your video and in 
 5. Paste the repository link and the video link in the application form.
 
 We will run `pnpm install && pnpm check && pnpm typecheck && pnpm test` on your repository.
+
+## Decisions
+
+1. **Store money as integer cents.** This avoids floating-point rounding; any remainder is assigned in member insertion order for predictable splits.
+2. **Separate routes, services, and repositories.** Hono routes handle HTTP, services enforce bill and payment rules, and repositories access D1. This keeps those responsibilities easier to understand and change.
+3. **Make payment updates conditional and idempotent.** Each payment stores an `Idempotency-Key`, and the database updates a share only while it is unpaid. Repeating a key returns the stored payment, while a competing key gets a conflict.
+
+## Architecture and data flow
+
+```mermaid
+flowchart LR
+  UI[React page] --> Router[TanStack Router]
+  UI --> Query[TanStack React Query]
+  Query --> API[Hono API routes]
+  API --> Service[Services]
+  Service --> Repo[D1 repositories]
+  Repo --> DB[(Cloudflare D1)]
+  DB --> Repo --> Service --> API --> Query
+  Query --> UI
+```
+
+React Query loads a selected home's bills, details, and balances in parallel. For changes, the page sends a request through Hono; the route calls a service, which validates the operation and uses a repository to read or update D1. JSON responses update or invalidate the matching React Query cache.
+
+## Trade-off
+
+Payment handling reads the share after a conditional update to learn whether this request's idempotency key won a race. That extra database read adds work, but lets concurrent attempts return either the same successful result or a clear conflict without double-paying the share.
+
+## Folder structure and file map
+
+```text
+.
+├── api/
+│   ├── migrations/       # D1 schema migrations
+│   ├── src/
+│   │   ├── repositories/ # D1 reads and writes
+│   │   ├── routes/       # Hono HTTP endpoints
+│   │   ├── service/      # Home, member, bill, and payment rules
+│   │   ├── utils/        # Validation, errors, and cent splitting
+│   │   └── index.ts      # Worker app and route mounting
+│   └── test/             # Vitest API tests and test helpers
+├── web/
+│   └── src/
+│       ├── components/   # Page sections and forms
+│       ├── routes/       # TanStack file routes and global styles
+│       ├── api.ts        # Typed API requests
+│       ├── storage.ts    # Saved spaces in local storage
+│       ├── types.ts      # Shared web data types
+│       └── main.tsx      # React, Router, and Query setup
+├── package.json          # Workspace scripts
+└── pnpm-workspace.yaml   # pnpm workspace definition
+```
+
+Key files: `api/src/service/payments.service.ts` coordinates idempotent payments; `api/src/utils/split.ts` distributes cents; `api/migrations/` defines the database schema; `web/src/routes/index.tsx` connects page state and mutations; and `web/src/components/BillsSection.tsx` renders bills and shares.
